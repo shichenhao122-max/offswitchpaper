@@ -1,5 +1,3 @@
-<!-- Original paper: the paper part of the Google Doc "Off Switch Updates" (export of 2026-09-03), which matches the TAIS 2026 version. Converted from Word by tools/docx2md.py; figures are taken from Word. -->
-
 # Embedded Off-Switches for AI Compute
 
 **James Petrie**[^1]
@@ -36,6 +34,7 @@ Each security block could be built with less than 40,000 transistors, so even 10
 
 We begin by presenting the high level security block architecture in Section 2, then the primary design based on random number generation and public key cryptography in Section 3.
 In Section 4 we analyze potential attacks, and in Section 5, we discuss alternative security block designs that could be added in parallel.
+Appendix A describes our prototype implementation of the main design and its measured cost.
 
 ## 2. High-Level Design
 
@@ -93,7 +92,7 @@ This hardwiring reduces the risk of accidental or intentional misconfiguration t
 The corresponding private key(s) would be stored securely off-device by the authorizer.
 By using public key cryptography, this design is not susceptible to scanning or sidechannel attacks (because no secrets would be stored on-device).
 
-Elliptic Curve Digital Signature Algorithm (ECDSA) is an extensively used and validated public key algorithm.
+Any standardized digital signature scheme can fill this role. Because the public keys are fixed in silicon for the lifetime of the chip, the scheme should remain secure against future quantum computers. Our prototype (Appendix A) therefore uses SLH-DSA [nist_fips_205_2024], the NIST-standardized stateless hash-based signature scheme derived from SPHINCS+, whose security rests only on the hash function it is built from; the similar stateful scheme HSS-LMS [mcgrew_rfc8554_2019, cooper_sp800-208_2020] is also supported, and the Elliptic Curve Digital Signature Algorithm (ECDSA) is an extensively used and validated alternative.
 Compact ECDSA circuits have been developed with less than 9000 gates [wenger_hardware_2011].
 
 ### 3.3 Essential Logic and Physical Integration
@@ -105,16 +104,13 @@ As a minimum example, the essential logic could be a “switch” circuit that i
 The transistors for essential logic within the security block can be placed directly next to critical security logic to make tampering more risky.
 
 The number of gates is mainly determined by the public key circuitry because the essential and security logic is relatively simple, and a ring oscillator can be implemented with $`<100`$ standard gates [vasyltsov_fast_2008].
-A compact ECDSA implementation requires roughly 9000 gates.
-Using a standard 4-transistor-per-gate conversion, this translates to 40,000 transistors per block.
-For context, this is a negligible fraction ($`5\times {10}^{-7}`$) of the 80 billion transistors in an NVIDIA H100 GPU.
-Even with 10,000 security blocks, the total area overhead would be approximately $`0.5\%`$ of the die.
+Our SLH-DSA prototype block synthesizes to about 40,000 gate equivalents (40.4 kGE in a 45 nm and 42.6 kGE in a 130 nm cell library, see Appendix A.3). Using a standard 4-transistor-per-gate conversion, this translates to about 160,000 transistors per block. For context, this is a negligible fraction (2 × 10⁻⁶) of the 80 billion transistors in an NVIDIA H100 GPU. Even with 10,000 security blocks, the total overhead would be approximately 2% of the die's transistors.
 
 ![Figure 3](figures/fig3.png)
 
 *Figure 3: Conceptual diagram of security block.
 The actual layout could be modified to put the most security-critical transistors close to essential logic.
-ECDSA: Elliptic Curve Digital Signature Algorithm, TRNG: True Random Number Generator.*
+ECDSA: Elliptic Curve Digital Signature Algorithm. The same architecture supports SLH-DSA (Appendix A). TRNG: True Random Number Generator.*
 
 ## 4. Threat Model
 
@@ -160,7 +156,7 @@ Table 2 analyses attacks and countermeasures involving this external infrastruct
 
 Each chip can incorporate several different security block designs, so no single vulnerability would compromise the whole chip.
 It may be worthwhile to generate multiple different physical layouts from the main RTL design.
-We can also keep the overall architecture, but replace the ECDSA cryptography with a variety of alternative public-key algorithms, ideally several of them quantum resistant.
+We can also keep the overall architecture, but use a variety of public-key signature schemes with different security assumptions; our prototype provides SLH-DSA, HSS-LMS and ECDSA verifiers behind the same interface (Appendix A).
 
 By creating significantly different designs with different security assumptions, security is improved against sophisticated actors that may have unexpected capabilities (e.g. cryptography exploits).
 In this section, we briefly analyze additional designs that do not rely on random number generation, public key cryptography, or any cryptography at all.
@@ -174,7 +170,7 @@ Antifuse memory can be programmed within the security block by using an external
 
 ### 5.2 No Public Key Cryptography
 
-Commonly used public key cryptography algorithms may be vulnerable to brute forcing by quantum computers, and quantum resistant public key algorithms are still undergoing review.
+Commonly used public key algorithms such as ECDSA are vulnerable to quantum computers. Designs with different security assumptions complement standardized quantum-resistant schemes such as SLH-DSA [nist_fips_205_2024].
 These risks would be reduced by adding some symmetric key security blocks.
 
 A symmetric approach pre-shares 256-bit keys stored in antifuses, using TRNG-generated nonces with AES-256 encryption for signatures.
@@ -214,51 +210,96 @@ The blocks could also generate a tamper-resistant, distributed audit log, with e
 This would create a verifiable record of chip activity.
 Furthermore, the authorization process could be expanded to support multi-party governance schemes, requiring cryptographic consensus from multiple independent entities before chip usage is approved.
 
-## References
-
-Bibliography style: unsrt.
-Bibliography file: OffSwitch.bib.
-
 ## Appendix A: Prototype Implementation
 
-To validate the security block design presented in Section 3, we implemented a single-block prototype in RTL (register-transfer level) hardware description language.
+To validate the security block design presented in Section 3, we implemented a single-block prototype in SystemVerilog at register-transfer level (RTL). The signature verifier is selected when the block is synthesized: SLH-DSA-SHA2-128s [nist_fips_205_2024], described in Appendix A.2, is the main configuration of this paper; the same hash-based engine also verifies HSS-LMS [mcgrew_rfc8554_2019], and an ECDSA verifier (Appendix A.4) provides a classical alternative.
 The prototype demonstrates that the core cryptographic authorization mechanism is implementable with standard digital logic, and that the security properties described in the paper can be enforced in hardware.
-Source code is available at [https://github.com/jamesbpetrie/security_block](https://github.com/jamesbpetrie/security_block).
+Public keys are fixed at synthesis time. Source code is available at [the accompanying repository][prototype-source].
 
 ### A.1 Architecture
 
 Figure 4 shows the prototype architecture, which implements the conceptual design from Figure 3.
-The security block contains five main components: a true random number generator (TRNG) for nonce generation, an ECDSA verification unit, a state machine orchestrating the authorization flow, a 64-bit usage allowance counter, and gated essential logic (an Int8 adder as a placeholder for actual chip operations).
+The security block contains five main components: a true random number generator (TRNG) for nonce generation, a signature verification unit (SLH-DSA in the main configuration), a state machine orchestrating the authorization flow, a 64-bit usage allowance counter, and gated essential logic (an Int8 adder as a placeholder for actual chip operations). The license enters as a stream of fixed-width beats with a valid/ready handshake, so, with the hash-based verifiers, the block never stores a whole signature.
 
 **Figure 4: Prototype security block architecture.** The Int8 adder serves as a placeholder for actual chip operations such as matrix multiplies or data routing.
 
-![Prototype security block architecture](figures/fig4-original.png)
+*Original:*
+
+![Prototype security block architecture (original)](figures/fig4-original.png)
+
+*Colour alternative:*
+
+![Prototype security block architecture (original) (colour alternative)](figures/fig4-original-color.png)
+
+*Revised:*
+
+![Prototype security block architecture (revised)](figures/fig4-revised.png)
+
+*Colour alternative:*
+
+![Prototype security block architecture (revised) (colour alternative)](figures/fig4-revised-color.png)
 
 **Table 3: Prototype module summary.**
 
 | Module | Type | Purpose |
 |---|---|---|
-| TRNG | Submodule | Generates 256-bit nonces (counter-based in prototype; ring oscillator in production) |
-| ECDSA | Submodule | Verifies license signatures using secp256k1 curve |
-| Security Logic | Inline | 7-state machine orchestrating authorization flow |
-| Allowance | Inline | 64-bit counter gating chip operations |
+| TRNG | Submodule | Generates 256-bit nonces (linear-feedback shift register (LFSR) in prototype; ring oscillator in production) |
+| Verifier | Submodule | Verifies license signatures ; SLH-DSA-SHA2-128s in the main configuration, HSS-LMS or ECDSA selectable at synthesis |
+| Security Logic | Inline | 4-state machine orchestrating authorization flow and signer order |
+| Allowance | Inline | 64-bit saturating counter gating chip operations |
 | Workload | Inline | Gated essential operation (Int8 addition) |
 
 The authorization flow follows the protocol described in Section 2: the TRNG generates a nonce, which is published for the external license authority to sign.
-Upon receiving a license $`(r,s)`$, the ECDSA module verifies the signature against the nonce and a hardcoded public key.
-Valid signatures increment the allowance counter; invalid signatures leave the allowance unchanged but retain the same nonce to permit retry.
+The license, a signature over the nonce, arrives as a stream of fixed-width beats (491 beats of 128 bits for SLH-DSA-SHA2-128s); the verifier consumes each beat as it is needed and checks the signature against the nonce and the hardwired public key of the expected signer. When several signers are configured, each must supply a valid license for the same nonce, in a fixed order, before the allowance counter is incremented (saturating at its maximum); an invalid license leaves the allowance unchanged but retains the same nonce to permit retry.
 The allowance decrements every clock cycle, providing time-based authorization depletion.
 When the allowance reaches zero, the AND gate blocks workload outputs by forcing all result bits to zero.
 
-### A.2 ECDSA Implementation
+### A.2 SLH-DSA Verifier
 
+The main configuration verifies SLH-DSA-SHA2-128s [nist_fips_205_2024], the smallest-signature SHA-2 parameter set of the standard: n = 16 byte hash values, a hypertree of height h = 63 in d = 7 layers of height h′ = 9, a FORS few-time signature with k = 14 trees of height a = 12, and WOTS+ one-time signatures with w = 16 (35 hash chains). A signature is 7,856 bytes, and every hash function of the scheme is built from SHA-256. Verification first hashes the randomizer R, the public key and the nonce into a message digest, which selects the FORS leaves and the position of the signing leaf in the hypertree. It then recomputes the FORS public key from the 14 revealed secrets and their authentication paths, and climbs the hypertree layer by layer: at each layer the WOTS+ chain values in the signature are hashed forward to the chain ends, compressed into a leaf, and the leaf is combined with its nine authentication-path siblings to give the root of that layer, which is the value signed at the next layer. The signature is valid if the root of the top layer equals the hardwired PK.root. Figure 5 shows the structure of the verifier, which consists of a sequencer, a hashing unit and a small set of registers.
+
+**Figure 5: SLH-DSA verification module architecture.** The sequencer steps through the phases of FIPS 205 verification, issuing every hash to a single SHA-256 core whose running state can be saved and restored.
+
+![SLH-DSA verification module architecture](figures/fig5-slh-dsa.png)
+
+*Colour alternative:*
+
+![SLH-DSA verification module architecture (colour alternative)](figures/fig5-slh-dsa-color.png)
+
+The **sequencer** steps through the phases of the verification in signature order. Two small sub-machines do the repetitive work: one walks a WOTS+ chain, loading a chain value from the license and hashing it forward as many times as the corresponding base-16 digit of the value signed at that layer requires; the other walks an authentication path, hashing the current node with each sibling up to the root. The same path walker serves the FORS trees and the hypertree layers. After the FORS phase the sequencer runs the chain and path phases seven times, once per layer, and finally compares the computed root with PK.root.
+
+The **hashing unit** is a single SHA-256 compression core [pavona_prim_sha2_2026] behind a block builder that assembles the hash inputs of FIPS 205 (the compressed address, PK.seed, and the data being hashed) one 512-bit block at a time. The wrapper around the core can save its 256-bit running state and restore it later, so one hash can be suspended while others run. This is what allows the public-key compression of each layer, a hash over all 35 chain ends, to be computed incrementally: whenever enough chain ends have accumulated to fill a block, that block is absorbed into the suspended hash and chain hashing continues, so the 35 chain ends are never stored together. The FORS public key is accumulated from the 14 tree roots in the same way.
+
+The **registers** hold the current hash value, the message digest, the saved SHA-256 state, a few banked chain ends and the counters of the sequencer. The verifier never stores the signature: each 128-bit element of the license is consumed when it is needed. Chain values are latched and hashed in place, while authentication-path siblings and FORS secrets are read straight off the license stream as part of a hash block, with the ready signal held low until that hash has consumed them. The per-signer public key, PK.seed and PK.root, is a synthesis-time constant.
+
+Verification requires about 4,300 SHA-256 compressions and about 292,000 clock cycles on average; 98% of nonces fall between 268,000 and 317,000 cycles, since the number of chain steps depends on the values signed at each layer. Each F and H call of the scheme costs two compressions, because FIPS 205 prepends a constant block containing PK.seed to the input of every F, H and T call and the verifier recomputes this block to avoid a dedicated prefix-state cache. HSS-LMS [mcgrew_rfc8554_2019] is verified by the same sequencer and hashing unit, with the scheme's constants and hash layouts supplied by a parameter package; its signature is streamed the same way, in 256-bit beats.
+
+### A.3 Synthesis Results
+
+Table 4 gives pre-layout synthesis results for the complete security block configured for two signers, with the SLH-DSA configuration occupying 40.4 kGE in Nangate45 and 42.6 kGE in SKY130. The RTL was synthesized with Yosys 0.68 (with the slang front end) and timed with OpenSTA 3.1.0, using the Nangate45 and SKY130 HD cell libraries at their typical corners, with an ideal clock and no wire load.[^evaluation-method] Gate equivalents (GE) are the cell area divided by the area of the library's NAND2 cell (0.798 and 3.754 µm²). The critical path is the target clock period minus the worst setup slack, so it includes clock-to-Q and setup time; FO4 is the path delay divided by a reference fanout-of-four inverter delay (24 ps for Nangate45, 83 ps for SKY130). Cycle counts are per license (one signature); the hash-based counts are means over random signed values. With two signers, two licenses are verified in sequence before the allowance is incremented. The SLH-DSA block is the smallest of the three, and its critical path is about the same as that of HSS-LMS in Nangate45 and somewhat shorter in SKY130 (the two share the hashing unit); the ECDSA path in this implementation is several times longer because of its unregistered 256-bit adder.
+
+**Table 4: Pre-layout synthesis results for the security block with two signers.** Area is cell area; cycle counts are per license, and path delays include clock-to-Q and setup time.
+
+| Verifier | Cycles per license | Nangate45: Area (µm²) | Nangate45: kGE | Nangate45: Path, ns (FO4) | SKY130: Area (µm²) | SKY130: kGE | SKY130: Path, ns (FO4) |
+|---|---|---|---|---|---|---|---|
+| SLH-DSA-SHA2-128s | 292,000 (mean) | 32,212 | 40.4 | 2.12 (88) | 160,060 | 42.6 | 11.03 (133) |
+| HSS-LMS (2 levels, h = 5, w = 8) | 618,000 (mean) | 39,602 | 49.6 | 2.14 (89) | 197,376 | 52.6 | 13.06 (157) |
+| ECDSA (secp256k1) | 5,914,000 | 83,177 | 104.2 | 9.28 (387) | 409,570 | 109.1 | 32.75 (395) |
+
+### A.4 ECDSA Implementation
+
+The ECDSA verifier provides a classical option within the same security block architecture.
 The ECDSA verification module computes $`R=u_{1}\cdot G+u_{2}\cdot Q`$, where $`u_{1}=z\cdot s^{-1} \bmod n`$, $`u_{2}=r\cdot s^{-1} \bmod n`$, $`G`$ is the generator point, $`Q`$ is the public key, and $`z`$ is the nonce.
 The signature is valid if $`R_{x} \bmod n=r`$.
-Figure 5 shows the internal structure of the ECDSA module, which consists of three main components: a state machine, a register file, and a modular arithmetic unit.
+Figure 6 shows the internal structure of the ECDSA module, which consists of three main components: a state machine, a register file, and a modular arithmetic unit.
 
-**Figure 5: ECDSA verification module architecture.** The state machine orchestrates scalar multiplication using the modular arithmetic unit and register file.
+**Figure 6: ECDSA verification module architecture.** The state machine orchestrates scalar multiplication using the modular arithmetic unit and register file.
 
 ![ECDSA verification module architecture](figures/fig-ecdsa.png)
+
+*Colour alternative:*
+
+![ECDSA verification module architecture (colour alternative)](figures/fig-ecdsa-color.png)
 
 The **state machine** controls the verification process through four phases.
 In the prep phase, it computes the scalar coefficients $`u_{1}`$ and $`u_{2}`$ by first inverting $`s`$ modulo the curve order $`n`$, then multiplying to obtain $`u_{1}=z\cdot s^{-1}`$ and $`u_{2}=r\cdot s^{-1}`$.
@@ -285,9 +326,4 @@ Point operations use the complete addition formulas from Renes, Costello, and Ba
 These formulas handle all cases uniformly—including doubling, adding the point at infinity, and adding a point to its negation—without branching on point values.
 Each point operation executes a fixed sequence of 40 field operations (additions, subtractions, and multiplications over the 256-bit prime field), implemented as a microcode program that reads operands from the register file, dispatches them to the arithmetic unit, and writes results back.
 
-[^1]: james.petrie@protonmail.com
-[^2]: Number of prior approved licenses: $`10^{3}`$ blocks/chip $`\times 10^{6}`$ chips $`\times 2`$ licenses/(block $`\times`$ day) $`\times 5`$ years $`\times 365`$ days/year $`\sim 36 \times 10^{12}`$. $`36 \times 10^{12}/2^{128} = 10^{-25}`$.
-[^3]: How authorization decisions are made is out of scope for this paper, but some options for authorizing parties are domestic regulators or countries that are part of an international agreement.
-[^4]: Although writing to antifuses depends on an external high-voltage source that may be vulnerable to disablement.
-[^5]: The antifuse memory can be programmed while still in a trusted facility, so is not vulnerable to the previously discussed attacks against the voltage source.
-[^6]: Calculation: $`2^{25}`$ seconds $`\approx 1`$ year.
+[prototype-source]: https://github.com/JamesPetrie/off-switch
